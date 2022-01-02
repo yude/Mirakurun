@@ -44,6 +44,7 @@ RUN apt-get -y update && apt-get -y upgrade && apt-get install -y --no-install-r
     rm -rf /var/lib/apt/lists/*
 
 # Install libarib25
+RUN git config --global http.sslVerify false
 RUN git clone https://github.com/stz2012/libarib25
 RUN cd libarib25 && cmake . && make && make install
 RUN cd .. && rm -rf libarib25 && apt purge cmake git
