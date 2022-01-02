@@ -1,3 +1,8 @@
+# このフォークについて
+以下の変更が加えられています。
+* Mirakurun 3.9.0-beta で発生した文字コードの変更に追従しません。
+* Dockerfile において、recpt1 のインストールを行うようになっています。
+
 [![Mirakurun](https://gist.githubusercontent.com/kanreisa/0ab27d7771e97edce5a24cc81b9b8ce6/raw/e50683f1c4e7d1a13e9ef468f8cc945b0dbc853c/logo-mirakurun.svg)](https://github.com/Chinachu/Mirakurun)
 
 # Mirakurun
