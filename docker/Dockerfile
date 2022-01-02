@@ -47,7 +47,7 @@ RUN apt-get -y update && apt-get -y upgrade && apt-get install -y --no-install-r
 RUN git config --global http.sslVerify false
 RUN git clone https://github.com/stz2012/libarib25
 RUN cd libarib25 && cmake . && make && make install
-RUN cd .. && rm -rf libarib25 && apt -y purge cmake git
+RUN cd .. && rm -rf libarib25 && apt -y purge cmake git && apt-get -y autoremove
 
 # Copy artifacts from images / builds
 COPY --from=build /usr/local/lib/node_modules/mirakurun /app
