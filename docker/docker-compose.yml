@@ -7,7 +7,7 @@ services:
     build:
       context: ../
       dockerfile: docker/Dockerfile
-    image: chinachu/mirakurun:latest
+    image: yude/mirakurun:latest
     container_name: mirakurun
     cap_add:
       - SYS_ADMIN
