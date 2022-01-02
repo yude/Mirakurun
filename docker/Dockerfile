@@ -1,5 +1,5 @@
 ARG ARCH=
-FROM ${ARCH}node:16.6.1-buster AS build
+FROM collelog/buildenv:node16-debian AS build
 WORKDIR /app
 ENV DOCKER=YES
 ADD . .
