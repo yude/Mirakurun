@@ -5,16 +5,13 @@ ENV DOCKER=YES
 ADD . .
 RUN apt-get update && \
     apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends build-essential && \
+    apt-get install -y --no-install-recommends build-essential cmake && \
     npm install && \
     npm run build && \
     npm install -g --unsafe-perm --production
 
 # recpt1 image
 FROM collelog/recpt1-build:stz2012-latest-debian-amd64 AS recpt1-image
-
-# libarib25 image
-FROM collelog/libarib25-build:epgdatacapbon-latest-debian-amd64 AS libarib25-image
 
 # recdvb image
 FROM collelog/recdvb-build:kaikoma-soft-latest-debian-amd64 AS recdvb-image
@@ -28,10 +25,14 @@ FROM collelog/arib-b25-stream-test-build:latest-debian-amd64 AS arib-b25-stream-
 # Final image
 FROM ${ARCH}node:16.6.1-buster-slim
 
+# Prepare & install for libarib25
+RUN apt-get -y update && apt-get -y upgrade && apt-get -y install cmake git
+RUN git clone https://github.com/stz2012/libarib25
+RUN cd libarib25 && cmake . && make && make install
+RUN cd .. && rm -rf libarib25 && apt purge cmake git
+
 WORKDIR /app
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends \
+RUN apt-get install -y --no-install-recommends \
         make \
         gcc \
         g++ \
@@ -48,7 +49,6 @@ RUN apt-get update && \
 
 # Copy artifacts from images / builds
 COPY --from=build /usr/local/lib/node_modules/mirakurun /app
-COPY --from=libarib25-image /build /
 COPY --from=recpt1-image /build /
 COPY --from=recdvb-image /build /
 COPY --from=recfsusb2n-image /build /
