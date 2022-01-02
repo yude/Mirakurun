@@ -25,11 +25,8 @@ FROM collelog/arib-b25-stream-test-build:latest-debian-amd64 AS arib-b25-stream-
 # Final image
 FROM ${ARCH}node:16.6.1-buster-slim
 
-# Prepare & install for libarib25
-RUN apt-get -y update && apt-get -y upgrade && apt-get -y install cmake git
-RUN git clone https://github.com/stz2012/libarib25
-RUN cd libarib25 && cmake . && make && make install
-RUN cd .. && rm -rf libarib25 && apt purge cmake git
+# Preparation
+RUN apt-get -y update && apt-get -y upgrade
 
 WORKDIR /app
 RUN apt-get install -y --no-install-recommends \
@@ -46,6 +43,12 @@ RUN apt-get install -y --no-install-recommends \
         && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Install libarib25
+RUN apt-get -y install cmake git
+RUN git clone https://github.com/stz2012/libarib25
+RUN cd libarib25 && cmake . && make && make install
+RUN cd .. && rm -rf libarib25 && apt purge cmake git
 
 # Copy artifacts from images / builds
 COPY --from=build /usr/local/lib/node_modules/mirakurun /app
