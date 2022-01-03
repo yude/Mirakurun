@@ -34,6 +34,8 @@ export interface RequestOption {
     query?: { [key: string]: any };
     /** request body */
     body?: string | object;
+    /** AbortSignal */
+    signal?: AbortSignal;
 }
 
 export interface Response {
@@ -86,6 +88,17 @@ export interface ChannelScanOption {
     scanMode?: apid.ChannelScanMode;
     setDisabledOnAdd?: boolean;
     refresh?: boolean;
+}
+
+export class ErrorResponse implements ErrorResponse {
+    constructor(response: ErrorResponse) {
+        this.status = response.status;
+        this.statusText = response.statusText;
+        this.contentType = response.contentType;
+        this.headers = response.headers;
+        this.isSuccess = response.isSuccess;
+        this.body = response.body;
+    }
 }
 
 export default class Client {
@@ -143,14 +156,14 @@ export default class Client {
                 },
                 err => {
 
-                    const ret: Response = {
+                    const ret = new ErrorResponse({
                         status: -1,
                         statusText: "Request Failure",
                         contentType: "",
                         headers: {},
                         isSuccess: false,
                         body: err
-                    };
+                    });
 
                     reject(ret);
                 }
@@ -158,7 +171,7 @@ export default class Client {
         });
     }
 
-    async call(operationId: string, param: { [key: string]: any } = {}): Promise<any|http.IncomingMessage> {
+    async call(operationId: string, param: { [key: string]: any } = {}, option: RequestOption = {}): Promise<any|http.IncomingMessage> {
 
         if (!this._docs) {
             await this._getDocs();
@@ -200,9 +213,10 @@ export default class Client {
             throw new Error(`operationId "${operationId}" is not found.`);
         }
 
-        const option: RequestOption = {
+        option = {
             headers: {},
-            query: {}
+            query: {},
+            ...option
         };
 
         for (const p of parameters) {
@@ -259,14 +273,70 @@ export default class Client {
         return res.body as apid.Service;
     }
 
-    async getServiceStreamByChannel(type: apid.ChannelType, channel: string, sid: apid.ServiceId, decode?: boolean, priority?: number): Promise<http.IncomingMessage> {
+    async getServiceStreamByChannel(opt: { type: apid.ChannelType, channel: string, sid: apid.ServiceId, decode?: boolean, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
+    async getServiceStreamByChannel(type: apid.ChannelType, channel: string, sid: apid.ServiceId, decode?: boolean, priority?: number): Promise<http.IncomingMessage>;
+    async getServiceStreamByChannel(...args: any[]) {
 
-        return this.call("getServiceStreamByChannel", { type, channel, sid, "decode": decode ? 1 : 0, "X-Mirakurun-Priority": priority });
+        let type: apid.ChannelType;
+        let channel: string;
+        let sid: apid.ServiceId;
+        let decode: boolean;
+        let priority: number;
+        let signal: AbortSignal;
+
+        if (typeof args[0] === "object") {
+            const opt = args[0];
+            type = opt.type;
+            channel = opt.channel;
+            sid = opt.sid;
+            decode = opt.decode;
+            priority = opt.priority;
+            signal = opt.signal;
+        } else {
+            type = args[0];
+            channel = args[1];
+            sid = args[2];
+            decode = args[3];
+            priority = args[4];
+        }
+
+        return this.call("getServiceStreamByChannel", {
+            type,
+            channel,
+            sid,
+            decode: decode ? 1 : 0
+        }, { priority, signal });
     }
 
-    async getChannelStream(type: apid.ChannelType, channel: string, decode?: boolean, priority?: number): Promise<http.IncomingMessage> {
+    async getChannelStream(opt: { type: apid.ChannelType, channel: string, decode?: boolean, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
+    async getChannelStream(type: apid.ChannelType, channel: string, decode?: boolean, priority?: number): Promise<http.IncomingMessage>;
+    async getChannelStream(...args: any[]): Promise<http.IncomingMessage> {
 
-        return this.call("getChannelStream", { type, channel, "decode": decode ? 1 : 0, "X-Mirakurun-Priority": priority });
+        let type: apid.ChannelType;
+        let channel: string;
+        let decode: boolean;
+        let priority: number;
+        let signal: AbortSignal;
+
+        if (typeof args[0] === "object") {
+            const opt = args[0];
+            type = opt.type;
+            channel = opt.channel;
+            decode = opt.decode;
+            priority = opt.priority;
+            signal = opt.signal;
+        } else {
+            type = args[0];
+            channel = args[1];
+            decode = args[2];
+            priority = args[3];
+        }
+
+        return this.call("getChannelStream", {
+            type,
+            channel,
+            decode: decode ? 1 : 0
+        }, { priority, signal });
     }
 
     async getPrograms(query?: ProgramsQuery): Promise<apid.Program[]> {
@@ -281,9 +351,31 @@ export default class Client {
         return res.body as apid.Program;
     }
 
-    async getProgramStream(id: apid.ProgramId, decode?: boolean, priority?: number): Promise<http.IncomingMessage> {
+    async getProgramStream(opt: { id: apid.ProgramId, decode?: boolean, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
+    async getProgramStream(id: apid.ProgramId, decode?: boolean, priority?: number): Promise<http.IncomingMessage>;
+    async getProgramStream(...args: any[]): Promise<http.IncomingMessage> {
 
-        return this.call("getProgramStream", { id, "decode": decode ? 1 : 0, "X-Mirakurun-Priority": priority });
+        let id: apid.ProgramId;
+        let decode: boolean;
+        let priority: number;
+        let signal: AbortSignal;
+
+        if (typeof args[0] === "object") {
+            const opt = args[0];
+            id = opt.id;
+            decode = opt.decode;
+            priority = opt.priority;
+            signal = opt.signal;
+        } else {
+            id = args[0];
+            decode = args[1];
+            priority = args[2];
+        }
+
+        return this.call("getProgramStream", {
+            id,
+            decode: decode ? 1 : 0
+        }, { priority, signal });
     }
 
     async getServices(query?: ServicesQuery): Promise<apid.Service[]> {
@@ -304,9 +396,31 @@ export default class Client {
         return res.body as Buffer;
     }
 
-    async getServiceStream(id: apid.ServiceItemId, decode?: boolean, priority?: number): Promise<http.IncomingMessage> {
+    async getServiceStream(opt: { id: apid.ServiceItemId, decode?: boolean, priority?: number, signal?: AbortSignal }): Promise<http.IncomingMessage>;
+    async getServiceStream(id: apid.ServiceItemId, decode?: boolean, priority?: number): Promise<http.IncomingMessage>;
+    async getServiceStream(...args: any[]): Promise<http.IncomingMessage> {
 
-        return this.call("getServiceStream", { id, "decode": decode ? 1 : 0, "X-Mirakurun-Priority": priority });
+        let id: apid.ServiceItemId;
+        let decode: boolean;
+        let priority: number;
+        let signal: AbortSignal;
+
+        if (typeof args[0] === "object") {
+            const opt = args[0];
+            id = opt.id;
+            decode = opt.decode;
+            priority = opt.priority;
+            signal = opt.signal;
+        } else {
+            id = args[0];
+            decode = args[1];
+            priority = args[2];
+        }
+
+        return this.call("getServiceStream", {
+            id,
+            decode: decode ? 1 : 0
+        }, { priority, signal });
     }
 
     async getTuners(): Promise<apid.TunerDevice[]> {
@@ -442,10 +556,12 @@ export default class Client {
             opt.headers["User-Agent"] = this.userAgent + " " + this._userAgent;
         }
 
-        if (option.priority === undefined) {
-            option.priority = this.priority;
+        if (opt.headers["X-Mirakurun-Priority"] === undefined) {
+            if (option.priority === undefined) {
+                option.priority = this.priority;
+            }
+            opt.headers["X-Mirakurun-Priority"] = option.priority.toString(10);
         }
-        opt.headers["X-Mirakurun-Priority"] = option.priority.toString(10);
 
         if (typeof option.query === "object") {
             opt.path += "?" + querystring.stringify(option.query);
@@ -454,6 +570,11 @@ export default class Client {
         if (typeof option.body === "object") {
             opt.headers["Content-Type"] = "application/json; charset=utf-8";
             option.body = JSON.stringify(option.body);
+        }
+
+        if (option.signal) { // instanceof AbortSignal
+            // http.request() AbortSignal is not working expectedly on node@16.12.0
+            (<any> opt).signal = option.signal;
         }
 
         return new Promise((resolve, reject) => {
@@ -472,6 +593,15 @@ export default class Client {
 
                 resolve(res);
             });
+
+            if (option.signal) { // instanceof AbortSignal
+                // workaround
+                option.signal.addEventListener("abort", () => {
+                    if (!req.destroyed) {
+                        req.destroy();
+                    }
+                }, { once: true });
+            }
 
             req.on("error", reject);
 

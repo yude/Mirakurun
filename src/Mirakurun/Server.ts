@@ -15,26 +15,27 @@
 */
 import * as fs from "fs";
 import * as http from "http";
-import * as url from "url";
-import * as ip from "ip";
 import * as express from "express";
 import * as cors from "cors";
 import * as openapi from "express-openapi";
 import * as morgan from "morgan";
 import * as yaml from "js-yaml";
 import { OpenAPIV2 } from "openapi-types";
+import RPCServer from "jsonrpc2-ws/lib/server";
 import { sleep } from "./common";
 import * as log from "./log";
 import * as system from "./system";
 import regexp from "./regexp";
 import _ from "./_";
+import { createRPCServer, initRPCNotifier } from "./rpc";
 
 const pkg = require("../../package.json");
 
 class Server {
 
     private _isRunning = false;
-    private _servers: http.Server[] = [];
+    private _servers = new Set<http.Server>();
+    private _rpcs = new Set<RPCServer>();
 
     async init() {
 
@@ -54,7 +55,7 @@ class Server {
         if (serverConfig.port) {
             while (true) {
                 try {
-                    if (system.getPrivateIPv4Addresses().length > 0) {
+                    if (system.getIPv4AddressesForListen().length > 0) {
                         break;
                     }
                 } catch (e) {
@@ -66,14 +67,14 @@ class Server {
 
             addresses = [
                 ...addresses,
-                ...system.getPrivateIPv4Addresses(),
+                ...system.getIPv4AddressesForListen(),
                 "127.0.0.1"
             ];
 
             if (serverConfig.disableIPv6 !== true) {
                 addresses = [
                     ...addresses,
-                    ...system.getPrivateIPv6Addresses(),
+                    ...system.getIPv6AddressesForListen(),
                     "::1"
                 ];
             }
@@ -83,7 +84,18 @@ class Server {
 
         app.disable("x-powered-by");
 
-        app.use(cors());
+        const corsOptions: cors.CorsOptions = {
+            origin: (origin, callback) => {
+                if (!origin) {
+                    return callback(null, true);
+                }
+                if (system.isPermittedHost(origin, serverConfig.hostname)) {
+                    return callback(null, true);
+                }
+                return callback(new Error("Not allowed by CORS"));
+            }
+        };
+        app.use(cors(corsOptions));
 
         app.use(morgan(":remote-addr :remote-user :method :url HTTP/:http-version :status :res[content-length] - :response-time ms :user-agent", {
             stream: log.event as any
@@ -93,22 +105,20 @@ class Server {
 
         app.use((req: express.Request, res: express.Response, next) => {
 
-            if (req.ip && ip.isPrivate(req.ip) === false) {
+            if (req.ip && system.isPermittedIPAddress(req.ip) === false) {
                 req.socket.end();
                 return;
             }
 
             if (req.get("Origin") !== undefined) {
-                const origin = url.parse(req.get("Origin"));
-                if (origin.hostname !== "localhost" && origin.hostname !== serverConfig.hostname && ip.isPrivate(origin.hostname) === false) {
+                if (!system.isPermittedHost(req.get("Origin"), serverConfig.hostname)) {
                     res.status(403).end();
                     return;
                 }
             }
 
             if (req.get("Referer") !== undefined) {
-                const referer = url.parse(req.get("Referer"));
-                if (referer.hostname !== "localhost" && referer.hostname !== serverConfig.hostname && ip.isPrivate(referer.hostname) === false) {
+                if (!system.isPermittedHost(req.get("Referer"), serverConfig.hostname)) {
                     res.status(403).end();
                     return;
                 }
@@ -118,21 +128,20 @@ class Server {
             next();
         });
 
-        app.use(express.static("lib/ui", {
-            setHeaders: (res, path) => {
-                if ((<any> express.static.mime).lookup(path) === "image/svg+xml") {
-                    res.setHeader("Cache-Control", "public, max-age=86400");
+        if (!serverConfig.disableWebUI) {
+            app.use(express.static("lib/ui", {
+                setHeaders: (res, path) => {
+                    if (express.static.mime.lookup(path) === "image/svg+xml") {
+                        res.setHeader("Cache-Control", "public, max-age=86400");
+                    }
                 }
-            }
-        }));
-        app.use("/eventemitter3", express.static("node_modules/eventemitter3"));
-        app.use("/react", express.static("node_modules/react"));
-        app.use("/react-dom", express.static("node_modules/react-dom"));
-        app.use("/@fluentui/react", express.static("node_modules/@fluentui/react"));
-
-        if (fs.existsSync("node_modules/swagger-ui-dist") === true) {
+            }));
+            app.use("/eventemitter3", express.static("node_modules/eventemitter3"));
+            app.use("/react", express.static("node_modules/react"));
+            app.use("/react-dom", express.static("node_modules/react-dom"));
+            app.use("/@fluentui/react", express.static("node_modules/@fluentui/react"));
             app.use("/swagger-ui", express.static("node_modules/swagger-ui-dist"));
-            app.get("/api/debug", (req, res) => res.redirect("/swagger-ui/?url=/api/docs"));
+            app.use("/api/debug", express.static("lib/ui/swagger-ui.html"));
         }
 
         const api = yaml.load(fs.readFileSync("api.yml", "utf8")) as OpenAPIV2.Document;
@@ -146,6 +155,11 @@ class Server {
         });
 
         app.use((err, req, res: express.Response, next) => {
+
+            if (err.message === "Not allowed by CORS") {
+                res.status(403).end();
+                return;
+            }
 
             log.error(JSON.stringify(err, null, "  "));
             console.error(err.stack);
@@ -194,8 +208,14 @@ class Server {
                 });
             }
 
-            this._servers.push(server);
+            this._servers.add(server);
+            this._rpcs.add(createRPCServer(server));
         });
+
+        // event notifications for RPC
+        initRPCNotifier(this._rpcs);
+
+        log.info("RPC interface is enabled");
     }
 }
 

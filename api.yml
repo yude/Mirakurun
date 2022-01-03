@@ -2,10 +2,10 @@ swagger: '2.0'
 info:
   title: Mirakurun
   version: ~
-  description: DVR Tuner Server Service for Chinachu Air.
+  description: DVR Tuner Server for Japanese TV.
   contact:
-    name: kanreisa
-    url: https://github.com/kanreisa
+    name: Chinachu Project
+    url: https://chinachu.moe/
 basePath: /api
 consumes:
   - application/json
@@ -186,13 +186,34 @@ definitions:
             type: integer
           componentType:
             type: integer
-      audio:
-        type: object
-        properties:
-          samplingRate:
-            $ref: '#/definitions/ProgramAudioSamplingRate'
-          componentType:
-            type: integer
+      audios:
+        type: array
+        items:
+          type: object
+          properties:
+            componentType:
+              type: integer
+            componentTag:
+              type: integer
+            isMain:
+              type: boolean
+            samplingRate:
+              $ref: '#/definitions/ProgramAudioSamplingRate'
+            langs:
+              type: array
+              items:
+                type: string
+                enum:
+                  - jpn
+                  - eng
+                  - deu
+                  - fra
+                  - ita
+                  - rus
+                  - zho
+                  - kor
+                  - spa
+                  - etc
       extended:
         type: object
       relatedItems:
@@ -281,6 +302,12 @@ definitions:
   RelatedItem:
     type: object
     properties:
+      type:
+        type: string
+        enum:
+          - shared
+          - relay
+          - movement
       networkId:
         type: integer
       serviceId:
@@ -421,7 +448,7 @@ definitions:
     enum:
       - create
       - update
-      - redefine
+      - remove
 
   # config --------------------------------------------------------------------
 
@@ -445,10 +472,6 @@ definitions:
       maxLogHistory:
         type: integer
         minimum: 0
-      highWaterMark:
-        type: integer
-      overflowTimeLimit:
-        type: integer
       maxBufferBytesBeforeReady:
         type: integer
       eventEndTimeout:
@@ -464,6 +487,16 @@ definitions:
         type: integer
       disableEITParsing:
         type: boolean
+      disableWebUI:
+        type: boolean
+      allowIPv4CidrRanges:
+        type: array
+        items:
+          type: string
+      allowIPv6CidrRanges:
+        type: array
+        items:
+          type: string
 
   ConfigTuners:
     type: array
@@ -577,6 +610,8 @@ definitions:
               $ref: '#/definitions/NetworkId'
           storedEvents:
             type: integer
+      rpcCount:
+        type: integer
       streamCount:
         type: object
         properties:

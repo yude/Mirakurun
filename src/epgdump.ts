@@ -42,7 +42,7 @@ if (fs.existsSync(dest) === true && force === false) {
 process.env.SERVER_CONFIG_PATH = path.resolve(__dirname, "../config/server.yml");
 process.env.PROGRAMS_DB_PATH = dest;
 
-import * as aribts from "aribts";
+import { TsStream } from "@chinachu/aribts";
 import _ from "./Mirakurun/_";
 import Event from "./Mirakurun/Event";
 import Program from "./Mirakurun/Program";
@@ -60,7 +60,7 @@ const size = fs.statSync(src).size;
 let bytesRead = 0;
 let events = 0;
 
-const tsStream: stream.Transform = new aribts.TsStream();
+const tsStream: stream.Transform = new TsStream();
 const readStream = fs.createReadStream(src);
 
 const transformStream = new stream.Transform({
@@ -92,13 +92,13 @@ transformStream.pipe(tsStream);
 
 tsStream.on("eit", (pid, data) => {
     epg.write(data);
-    events = _.program.items.length;
+    events = _.program.itemMap.size;
 });
 tsStream.resume();
 
 function finalize() {
 
-    const programs = _.program.items;
+    const programs = Array.from(_.program.itemMap.values());
 
     console.log("programs:", programs.length, "(events)");
 

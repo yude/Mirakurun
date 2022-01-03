@@ -18,7 +18,7 @@ import * as common from "./common";
 import * as log from "./log";
 import * as db from "./db";
 import _ from "./_";
-import Event from "./Event";
+import Event, { EventType } from "./Event";
 import queue from "./queue";
 
 export function getProgramItemId(networkId: number, serviceId: number, eventId: number): number {
@@ -27,25 +27,12 @@ export function getProgramItemId(networkId: number, serviceId: number, eventId: 
 
 export default class Program {
 
-    static get(id: number): db.Program {
-        return _.program.get(id);
-    }
-
-    static exists(id: number): boolean {
-        return _.program.exists(id);
-    }
-
-    static findByQuery(query: object): db.Program[] {
-        return _.program.findByQuery(query);
-    }
-
-    static all(): db.Program[] {
-        return _.program.items;
-    }
-
-    private _itemMap: Map<number, db.Program> = new Map<number, db.Program>();
+    private _itemMap = new Map<number, db.Program>();
     private _saveTimerId: NodeJS.Timer;
-    private _programGCInterval: number = _.config.server.programGCInterval || 1000 * 60 * 15;
+    private _emitTimerId: NodeJS.Timer;
+    private _emitRunning = false;
+    private _emitPrograms = new Map<db.Program, EventType>();
+    private _programGCInterval = _.config.server.programGCInterval || 1000 * 60 * 60; // 1 hour
 
     constructor() {
         this._load();
@@ -53,9 +40,8 @@ export default class Program {
         setTimeout(this._gc.bind(this), this._programGCInterval);
     }
 
-    /** CAUTION: This getter method creates a new Array object every time. */
-    get items(): db.Program[] {
-        return Array.from(this._itemMap.values());
+    get itemMap(): Map<number, db.Program> {
+        return this._itemMap;
     }
 
     add(item: db.Program, firstAdd: boolean = false): void {
@@ -64,30 +50,14 @@ export default class Program {
             return;
         }
 
-        const removedIds = [];
-
         if (firstAdd === false) {
-            _.program.findConflicts(
-                item.networkId,
-                item.serviceId,
-                item.startAt,
-                item.startAt + item.duration
-            ).forEach(conflictedItem => {
-                this.remove(conflictedItem.id);
-                removedIds.push(conflictedItem.id);
-
-                log.debug(
-                    "ProgramItem#%d (networkId=%d, eventId=%d) has removed for redefine to ProgramItem#%d (eventId=%d)",
-                    conflictedItem.id, conflictedItem.networkId, conflictedItem.eventId, item.id, item.eventId
-                );
-            });
+            this._findAndRemoveConflicts(item);
         }
 
         this._itemMap.set(item.id, item);
 
         if (firstAdd === false) {
-            Event.emit("program", "create", item);
-            removedIds.forEach(id => Event.emit("program", "redefine", { from: id, to: item.id }));
+            this._emitPrograms.set(item, "create");
         }
 
         this.save();
@@ -100,8 +70,11 @@ export default class Program {
     set(id: number, props: Partial<db.Program>): void {
         const item = this.get(id);
         if (item && common.updateObject(item, props) === true) {
+            if (props.startAt || props.duration) {
+                this._findAndRemoveConflicts(item);
+            }
+            this._emitPrograms.set(item, "update");
             this.save();
-            Event.emit("program", "update", item);
         }
     }
 
@@ -116,9 +89,7 @@ export default class Program {
     }
 
     findByQuery(query: object): db.Program[] {
-        // Pass `this.items` instead of `this._itemIterator`.
-        // Because IterableIterator<T> doesn't have the `filter()` method.
-        return sift(query, this.items);
+        return sift(query, Array.from(this._itemMap.values()));
     }
 
     findByNetworkId(networkId: number): db.Program[] {
@@ -147,32 +118,11 @@ export default class Program {
         return items;
     }
 
-    findConflicts(networkId: number, serviceId: number, start: number, end: number): db.Program[] {
-
-        const items = [];
-
-        for (const item of this._itemMap.values()) {
-            if (
-                item.networkId === networkId &&
-                item.serviceId === serviceId &&
-                item.startAt >= start &&
-                item.startAt < end
-            ) {
-                items.push(item);
-            }
-        }
-
-        return items;
-    }
-
     findByNetworkIdAndReplace(networkId: number, programs: db.Program[]): void {
 
         let count = 0;
 
-        // The `reverse()` method never changes the original data.  Because
-        // `this.items` returns a new Array object created from the original
-        // data.
-        for (const item of this.items.reverse()) {
+        for (const item of [...this._itemMap.values()].reverse()) {
             if (item.networkId === networkId) {
                 // Calling `this.remove(item)` here is safe.  Because that never
                 // changes the Array object we're iterating here.
@@ -192,6 +142,8 @@ export default class Program {
     }
 
     save(): void {
+        clearTimeout(this._emitTimerId);
+        this._emitTimerId = setTimeout(() => this._emit(), 100);
         clearTimeout(this._saveTimerId);
         this._saveTimerId = setTimeout(() => this._save(), 1000 * 10);
     }
@@ -222,12 +174,56 @@ export default class Program {
         }
     }
 
+    private _findAndRemoveConflicts(target: db.Program): void {
+
+        for (const item of this._itemMap.values()) {
+            if (
+                item.networkId === target.networkId &&
+                item.serviceId === target.serviceId &&
+                item.id !== target.id &&
+                (
+                    (item.startAt >= target.startAt && item.startAt < (target.startAt + target.duration)) ||
+                    (item.startAt <= target.startAt && (item.startAt + item.duration) > target.startAt)
+                ) &&
+                (!item._pf || target._pf)
+            ) {
+                this.remove(item.id);
+                Event.emit("program", "remove", { id: item.id });
+
+                log.debug(
+                    "ProgramItem#%d (networkId=%d, eventId=%d) has removed by overlapped ProgramItem#%d (eventId=%d)",
+                    item.id, item.networkId, item.eventId, target.id, target.eventId
+                );
+            }
+        }
+    }
+
+    private async _emit(): Promise<void> {
+
+        if (this._emitRunning) {
+            return;
+        }
+        this._emitRunning = true;
+
+        for (const [item, eventType] of this._emitPrograms) {
+            this._emitPrograms.delete(item);
+            Event.emit("program", eventType, item);
+
+            await common.sleep(10);
+        }
+
+        this._emitRunning = false;
+        if (this._emitPrograms.size > 0) {
+            this._emit();
+        }
+    }
+
     private _save(): void {
 
         log.debug("saving programs...");
 
         db.savePrograms(
-            this.items,
+            Array.from(this._itemMap.values()),
             _.configIntegrity.channels
         );
     }
@@ -238,11 +234,16 @@ export default class Program {
 
         queue.add(async () => {
 
-            const now = Date.now();
+            const shortExp = Date.now() - 1000 * 60 * 60 * 3; // 3 hour
+            const longExp = Date.now() - 1000 * 60 * 60 * 24; // 24 hours
+            const maximum = Date.now() + 1000 * 60 * 60 * 24 * 9; // 9 days
             let count = 0;
 
             for (const item of this._itemMap.values()) {
-                if (now > (item.startAt + item.duration)) {
+                if (
+                    (item.duration === 1 ? longExp : shortExp) > (item.startAt + item.duration) ||
+                    maximum < item.startAt
+                ) {
                     ++count;
                     this.remove(item.id);
                 }

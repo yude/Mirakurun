@@ -19,15 +19,16 @@ path: /var/run/mirakurun.sock # string or ~ (null) *Ignored in Docker
 port: 40772 # integer or ~ (null) *Ignored in Docker
 hostname: localhost
 disableIPv6: false # boolean *Ignored in Docker
-highWaterMark: 25165824 # integer (bytes)
-overflowTimeLimit: 30000 # integer (ms)
 maxBufferBytesBeforeReady: 8388608 # integer (bytes)
 eventEndTimeout: 1000 # integer (ms)
-programGCInterval: 900000 # integer (ms)
-epgGatheringInterval: 900000 # integer (ms)
+programGCInterval: 3600000 # integer (ms)
+epgGatheringInterval: 3600000 # integer (ms)
 epgRetrievalTime: 600000 # integer (ms)
-logoDataInterval: 86400000 # integer (ms)
+logoDataInterval: 604800000 # integer (ms)
 disableEITParsing: false # boolean
+disableWebUI: false # boolean
+allowIPv4CidrRanges: ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] # array of string
+allowIPv6CidrRanges: ["fc00::/7"] # array of string
 ```
 
 ### Environment Values (Docker)
@@ -36,8 +37,6 @@ disableEITParsing: false # boolean
 HOSTNAME
 LOG_LEVEL
 MAX_LOG_HISTORY
-HIGH_WATER_MARK
-OVERFLOW_TIME_LIMIT
 MAX_BUFFER_BYTES_BEFORE_READY
 EVENT_END_TIMEOUT
 PROGRAM_GC_INTERVAL
@@ -45,6 +44,9 @@ EPG_GATHERING_INTERVAL
 EPG_RETRIEVAL_TIME
 LOGO_DATA_INTERVAL
 DISABLE_EIT_PARSING
+DISABLE_WEB_UI
+ALLOW_IPV4_CIDR_RANGES
+ALLOW_IPV6_CIDR_RANGES
 ```
 
 ## tuners.yml

@@ -2,6 +2,65 @@
 
 see [Commit Logs](https://github.com/Chinachu/Mirakurun/commits/master) to check all.
 
+## 3.9.0 (2022-xx-xx)
+
+Performance improvements, fixes for memory leaks and bugs related to EPG processing, etc.
+
+### Server Changes
+
+- **config/server**: Add `disableWebUI` (Env: `DISABLE_WEB_UI` for Docker) to disable Web UI.
+- **config/server**: Change several default values based on typical usage.
+  - `programGCInterval`: `900000` (15 mins) → `3600000` (1 hour)
+  - `epgGatheringInterval`: `900000` (15 mins) → `3600000` (30 mins)
+  - `logoDataInterval`: `86400000` (1 day) → `604800000` (7 days)
+- **config/server**: Remove `overflowTimeLimit`.
+- **ts-filter**: Remove own overflow handling as it no longer makes sense.
+- **ts-filter**: Fix memory leak when comparing CRC of broken PAT packet processing. (bug)
+- **ts-filter**: Fix a problem in which the _close() function sometimes didn't call properly when the tuner was intercepted. (bug)
+- **ts-filter**: Change EIT\[p/f\] information to use in EPG.
+- **tuner-device**: Fixed a problem which the command didn't respawn ​correctly when it terminated unexpectedly. (bug)
+- **epg**: Add support for multiple EIT types.
+- **epg**: Fix wrong event group processing. (bug)
+- **epg**: Add support for event relay.
+- **epg**: Add support for multi track audios.
+- **epg**: Improve performance of parsing start_time of events.
+- **epg**: Change to run asynchronously to reduce load.
+- **program**: Add event group type as `type` to `db.ProgramRelatedItem` of `db.Program`.
+- **program**: Fixed a problem in the implementation of conflict detection. (bug)
+- **program**: Reduced the frequent repeated update events.
+- **program**: Removed the `audio` property and added the `audios` property to support multi track audios. (**breaking change**)
+- **program**: Fix program overlapping when re-scheduled. (bug)
+- **program**: Removed the `redefine` event and added the `remove` event. (**breaking change**)
+- **api/iptv**: Fixed a problem with Kodi 19's IPTV feature that caused channel selection to take a long time. [#101](https://github.com/Chinachu/Mirakurun/pull/101)
+- **api/iptv**: Add category (genre) info.
+- **api/iptv**: Add timezone offset explicitly.
+- **api/getLogoImage**: Add `Cache-Control` header to cache logo images.
+- **api/restart**: Improved the restart speed on Docker. (approx. 2 secs)
+- **rpc**: Added a WebSocket RPC interface. (experimental)
+- **ui**: Now using RPC interface.
+- **ui/status**: Fix "EPG Gathering Network IDs" hex strings to upper case.
+- **ui/status**: Fix handle tuner updates to correctly. (bug) [#109](https://github.com/Chinachu/Mirakurun/pull/109)
+- **ui/config**: Add "EPG Gathering Interval" setting in Config/Server.
+- **ui/heart**: Add confirmation before accessing opencollective. [#106](https://github.com/Chinachu/Mirakurun/issues/106)
+
+### Client Changes
+
+- Add [AbortSignal](https://nodejs.org/api/globals.html#class-abortsignal) option for `getChannelStream()`, `getServiceStreamByChannel()` `getServiceStream()`, `getProgramStream()`.
+- Fix set priority correctly. (bug)
+
+### Docker Changes
+
+- Update base image to `node:16.13.1-buster-slim`.
+- Fixed the exit signal handling properly.
+- When a `SIGHUP` is received in a container, only the node process can be restarted quickly.
+- default `docker-compose.yml` volumes has been changed:
+  - `/usr/local/mirakurun/*` → `/opt/mirakurun/*`
+
+### Other Changes
+
+- **package**: Drop engine support `node@12`.
+- **package**: Update dependencies.
+
 ## 3.8.0 (2021-08-10)
 
 Logo support enhanced.
