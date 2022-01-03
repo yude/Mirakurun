@@ -33,6 +33,7 @@ import {
     DialogType,
     DialogFooter,
 } from "@fluentui/react";
+import { Validator as IPValidator } from "ip-num/Validator"
 import { UIState } from "../index";
 import { ConfigServer } from "../../../api";
 
@@ -66,7 +67,30 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
     }, [saved]);
 
     const docker = uiState.status.process.env.DOCKER === "YES";
+    const ipv6Ready = docker === false || uiState.status.process.env.DOCKER_NETWORK === "host";
     const changed = JSON.stringify(current) !== JSON.stringify(editing);
+
+    let invalid = false;
+    if (editing) {
+        if (editing.allowIPv4CidrRanges) {
+            for (const range of editing.allowIPv4CidrRanges) {
+                const [valid] = IPValidator.isValidIPv4CidrRange(range);
+                if (!valid) {
+                    invalid = true;
+                    break;
+                }
+            }
+        }
+        if (!invalid && editing.allowIPv6CidrRanges) {
+            for (const range of editing.allowIPv6CidrRanges) {
+                const [valid] = IPValidator.isValidIPv6CidrRange(range);
+                if (!valid) {
+                    invalid = true;
+                    break;
+                }
+            }
+        }
+    }
 
     return (
         <>
@@ -100,6 +124,7 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                             setEditing({ ...editing, logLevel: option.key });
                         }}
                     />
+
                     <TextField
                         styles={{ fieldGroup: { "max-width": 200 } }}
                         label="Hostname"
@@ -108,17 +133,39 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                             setEditing({ ...editing, hostname: newValue });
                         }}
                     />
+
                     <Toggle
                         label="IPv6"
-                        disabled={docker}
-                        checked={(docker === false && (editing.disableIPv6 === undefined || editing.disableIPv6 === false))}
+                        disabled={!ipv6Ready}
+                        checked={(ipv6Ready && (editing.disableIPv6 === undefined || editing.disableIPv6 === false))}
                         onText="Enable"
                         offText="Disable"
                         onChange={(ev, checked) => {
                             setEditing({ ...editing, disableIPv6: checked === false });
                         }}
                     />
+
                     <Separator alignContent="start">Advanced</Separator>
+
+                    <TextField
+                        styles={{ fieldGroup: { "max-width": 200 } }}
+                        label="EPG Gathering Interval"
+                        suffix="ms"
+                        placeholder="3600000"
+                        value={`${editing.epgGatheringInterval || ""}`}
+                        onChange={(ev, newValue) => {
+                            if (newValue === "") {
+                                delete editing.epgGatheringInterval;
+                            } else if (/^[0-9]+$/.test(newValue)) {
+                                const int = parseInt(newValue, 10);
+                                if (int <= 1000 * 60 * 60 * 24 * 3 && int > 0) {
+                                    editing.epgGatheringInterval = int;
+                                }
+                            }
+                            setEditing({ ...editing });
+                        }}
+                    />
+
                     <Toggle
                         label={
                             <Stack horizontal verticalAlign="end">
@@ -141,8 +188,65 @@ const Configurator: React.FC<{ uiState: UIState, uiStateEvents: EventEmitter }> 
                             setEditing({ ...editing, disableEITParsing: checked === false ? true : undefined })
                         }}
                     />
+
+                    <TextField
+                        styles={{ fieldGroup: { "max-width": 200 } }}
+                        label="Allow IPv4 CIDR Ranges"
+                        onRenderLabel={(props) => (
+                            <Stack horizontal verticalAlign="end">
+                                <Label>{props.label}</Label>
+                                <TooltipHost content={
+                                    `If running in Docker, Env var \`ALLOW_IPV4_CIDR_RANGES\` is preferred.
+                                    ⚠️ Maximum attention required!`
+                                }>
+                                    <Icon
+                                        iconName="Warning"
+                                        style={{ marginLeft: 4, marginBottom: 6 }}
+                                    />
+                                </TooltipHost>
+                            </Stack>
+                        )}
+                        multiline rows={3}
+                        value={(editing.allowIPv4CidrRanges || []).join("\n")}
+                        onChange={(ev, newValue) => {
+                            if (newValue.trim() === "") {
+                                setEditing({ ...editing, allowIPv4CidrRanges: null });
+                            } else {
+                                setEditing({ ...editing, allowIPv4CidrRanges: newValue.split("\n").map(range => range.trim()) })
+                            }
+                        }}
+                    />
+
+                    <TextField
+                        styles={{ fieldGroup: { "max-width": 380 } }}
+                        label="Allow IPv6 CIDR Ranges"
+                        onRenderLabel={(props) => (
+                            <Stack horizontal verticalAlign="end">
+                                <Label>{props.label}</Label>
+                                <TooltipHost content={
+                                    `If running in Docker, Env var \`ALLOW_IPV6_CIDR_RANGES\` is preferred.
+                                    ⚠️ Maximum attention required!`
+                                }>
+                                    <Icon
+                                        iconName="Warning"
+                                        style={{ marginLeft: 4, marginBottom: 6 }}
+                                    />
+                                </TooltipHost>
+                            </Stack>
+                        )}
+                        multiline rows={3}
+                        value={(editing.allowIPv6CidrRanges || []).join("\n")}
+                        onChange={(ev, newValue) => {
+                            if (newValue.trim() === "") {
+                                setEditing({ ...editing, allowIPv6CidrRanges: null });
+                            } else {
+                                setEditing({ ...editing, allowIPv6CidrRanges: newValue.split("\n").map(range => range.trim()) })
+                            }
+                        }}
+                    />
+
                     <Stack horizontal tokens={{ childrenGap: "0 8" }} style={{ marginTop: 16 }}>
-                        <PrimaryButton text="Save" disabled={!changed} onClick={() => setShowSaveDialog(true)} />
+                        <PrimaryButton text="Save" disabled={!changed || invalid} onClick={() => setShowSaveDialog(true)} />
                         <DefaultButton text="Cancel" disabled={!changed} onClick={() => setEditing({ ...current })} />
                     </Stack>
                 </Stack>

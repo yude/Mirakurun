@@ -85,10 +85,24 @@ export interface Program {
         streamContent: number;
         componentType: number;
     }
-    audio?: {
-        samplingRate: ProgramAudioSamplingRate;
+    audios?: {
+        /** component_type
+         * - 0x01 - 1/0 mode (single-mono)
+         * - 0x02 - 1/0 + 1/0 mode (dual-mono)
+         * - 0x03 - 2/0 mode (stereo)
+         * - 0x07 - 3/1 mode
+         * - 0x08 - 3/2 mode
+         * - 0x09 - 3/2 + LFE mode
+         */
         componentType: number;
-    }
+        componentTag: number;
+        isMain: boolean;
+        samplingRate: ProgramAudioSamplingRate;
+        /** ISO_639_language_code, ISO_639_language_code_2
+         * - this `#length` will `2` if dual-mono multi-lingual.
+         */
+        langs: ProgramAudioLanguageCode[];
+    }[]
 
     series?: ProgramSeries;
 
@@ -119,6 +133,19 @@ export enum ProgramAudioSamplingRate {
     "48kHz" = 48000
 }
 
+export type ProgramAudioLanguageCode = (
+    "jpn" |
+    "eng" |
+    "deu" |
+    "fra" |
+    "ita" |
+    "rus" |
+    "zho" |
+    "kor" |
+    "spa" |
+    "etc"
+);
+
 export interface ProgramSeries {
     id: number;
     repeat: number;
@@ -129,7 +156,10 @@ export interface ProgramSeries {
     name: string;
 }
 
+export type ProgramRelatedItemType = "shared" | "relay" | "movement";
+
 export interface ProgramRelatedItem {
+    type: ProgramRelatedItemType;
     networkId?: number;
     serviceId: number;
     eventId: number;
@@ -190,7 +220,7 @@ export interface Event {
 
 export type EventResource = "program" | "service" | "tuner";
 
-export type EventType = "create" | "update" | "redefine";
+export type EventType = "create" | "update" | "remove";
 
 export interface ConfigServer {
     path?: string;
@@ -199,8 +229,6 @@ export interface ConfigServer {
     disableIPv6?: boolean;
     logLevel?: LogLevel;
     maxLogHistory?: number;
-    highWaterMark?: number;
-    overflowTimeLimit?: number;
     maxBufferBytesBeforeReady?: number;
     eventEndTimeout?: number;
     programGCInterval?: number;
@@ -208,6 +236,9 @@ export interface ConfigServer {
     epgRetrievalTime?: number;
     logoDataInterval?: number;
     disableEITParsing?: boolean;
+    disableWebUI?: boolean;
+    allowIPv4CidrRanges?: string[];
+    allowIPv6CidrRanges?: string[];
 }
 
 export enum LogLevel {
@@ -277,6 +308,7 @@ export interface Status {
         gatheringNetworks: NetworkId[];
         storedEvents: number;
     };
+    rpcCount: number;
     streamCount: {
         tunerDevice: number;
         tsFilter: number;

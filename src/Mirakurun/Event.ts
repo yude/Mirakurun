@@ -13,18 +13,20 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-import { EventEmitter } from "events";
+import EventEmitter = require("eventemitter3");
+import rfdc = require("rfdc");
+const clone = rfdc();
 import _ from "./_";
 
-export interface EventMessage {
+export interface EventMessage<T = any> {
     readonly resource: EventResource;
     readonly type: EventType;
-    readonly data: any;
+    readonly data: T;
     readonly time: number;
 }
 
 export type EventResource = "program" | "service" | "tuner";
-export type EventType = "create" | "update" | "redefine";
+export type EventType = "create" | "update" | "remove";
 
 export default class Event extends EventEmitter {
 
@@ -49,7 +51,7 @@ export default class Event extends EventEmitter {
         const message: EventMessage = {
             resource: resource,
             type: type,
-            data: data,
+            data: clone(data),
             time: Date.now()
         };
 
@@ -63,11 +65,11 @@ export default class Event extends EventEmitter {
 
         this.on("event", message => {
 
-            this._log.unshift(message);
+            this._log.push(message);
 
             // testing
             if (this._log.length > 100) {
-                this._log.pop();
+                this._log.shift();
             }
         });
     }

@@ -18,6 +18,7 @@ import { dirname } from "path";
 import { hostname } from "os";
 import * as fs from "fs";
 import * as yaml from "js-yaml";
+import * as ipnum from "ip-num";
 import * as common from "./common";
 import * as log from "./log";
 
@@ -25,21 +26,23 @@ type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
 const {
     DOCKER,
+    DOCKER_NETWORK,
     SERVER_CONFIG_PATH,
     TUNERS_CONFIG_PATH,
     CHANNELS_CONFIG_PATH,
     HOSTNAME,
     LOG_LEVEL,
     MAX_LOG_HISTORY,
-    HIGH_WATER_MARK,
-    OVERFLOW_TIME_LIMIT,
     MAX_BUFFER_BYTES_BEFORE_READY,
     EVENT_END_TIMEOUT,
     PROGRAM_GC_INTERVAL,
     EPG_GATHERING_INTERVAL,
     EPG_RETRIEVAL_TIME,
     LOGO_DATA_INTERVAL,
-    DISABLE_EIT_PARSING
+    DISABLE_EIT_PARSING,
+    DISABLE_WEB_UI,
+    ALLOW_IPV4_CIDR_RANGES,
+    ALLOW_IPV6_CIDR_RANGES
 } = process.env;
 
 const IS_DOCKER = DOCKER === "YES";
@@ -60,10 +63,6 @@ export interface Server {
     readonly logLevel?: log.LogLevel;
     readonly maxLogHistory?: number;
 
-    /** Byte */
-    readonly highWaterMark?: number;
-    /** Milliseconds */
-    readonly overflowTimeLimit?: number;
     readonly maxBufferBytesBeforeReady?: number;
     readonly eventEndTimeout?: number;
 
@@ -72,6 +71,9 @@ export interface Server {
     readonly epgRetrievalTime?: number;
     readonly logoDataInterval?: number;
     readonly disableEITParsing?: true;
+    readonly disableWebUI?: true;
+    readonly allowIPv4CidrRanges?: string[];
+    readonly allowIPv6CidrRanges?: string[];
 }
 
 export interface Tuner {
@@ -159,11 +161,21 @@ export function loadServer(): Server {
     }
     const config: Writable<Server> = load("server", path);
 
+    // set default
+    if (!config.allowIPv4CidrRanges) {
+        config.allowIPv4CidrRanges = ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"];
+    }
+    if (!config.allowIPv6CidrRanges) {
+        config.allowIPv6CidrRanges = ["fc00::/7"];
+    }
+
     // Docker
     if (IS_DOCKER) {
         config.path = "/var/run/mirakurun.sock";
-        config.port = 40772;
-        config.disableIPv6 = true;
+        if (DOCKER_NETWORK !== "host") {
+            config.port = 40772;
+            config.disableIPv6 = true;
+        }
 
         if (!config.hostname && typeof HOSTNAME !== "undefined" && HOSTNAME.trim().length > 0) {
             config.hostname = HOSTNAME.trim();
@@ -173,12 +185,6 @@ export function loadServer(): Server {
         }
         if (typeof MAX_LOG_HISTORY !== "undefined" && /^[0-9]+$/.test(MAX_LOG_HISTORY)) {
             config.maxLogHistory = parseInt(MAX_LOG_HISTORY, 10);
-        }
-        if (typeof HIGH_WATER_MARK !== "undefined" && /^[0-9]+$/.test(HIGH_WATER_MARK)) {
-            config.highWaterMark = parseInt(HIGH_WATER_MARK, 10);
-        }
-        if (typeof OVERFLOW_TIME_LIMIT !== "undefined" && /^[0-9]+$/.test(OVERFLOW_TIME_LIMIT)) {
-            config.overflowTimeLimit = parseInt(OVERFLOW_TIME_LIMIT, 10);
         }
         if (typeof MAX_BUFFER_BYTES_BEFORE_READY !== "undefined" && /^[0-9]+$/.test(MAX_BUFFER_BYTES_BEFORE_READY)) {
             config.maxBufferBytesBeforeReady = parseInt(MAX_BUFFER_BYTES_BEFORE_READY, 10);
@@ -201,6 +207,15 @@ export function loadServer(): Server {
         if (DISABLE_EIT_PARSING === "true") {
             config.disableEITParsing = true;
         }
+        if (DISABLE_WEB_UI === "true") {
+            config.disableWebUI = true;
+        }
+        if (typeof ALLOW_IPV4_CIDR_RANGES !== "undefined" && ALLOW_IPV4_CIDR_RANGES.trim().length > 0) {
+            config.allowIPv4CidrRanges = ALLOW_IPV4_CIDR_RANGES.split(",");
+        }
+        if (typeof ALLOW_IPV6_CIDR_RANGES !== "undefined" && ALLOW_IPV6_CIDR_RANGES.trim().length > 0) {
+            config.allowIPv6CidrRanges = ALLOW_IPV6_CIDR_RANGES.split(",");
+        }
 
         log.info("load server config (merged w/ env): %s", JSON.stringify(config));
     }
@@ -208,6 +223,42 @@ export function loadServer(): Server {
     if (!config.hostname) {
         config.hostname = hostname();
         log.info("detected hostname: %s", config.hostname);
+    }
+
+    // validate allowIPv4CidrRanges
+    {
+        const validRanges: string[] = [];
+
+        for (const range of config.allowIPv4CidrRanges) {
+            const [valid, errors] = ipnum.Validator.isValidIPv4CidrRange(range);
+            if (valid) {
+                validRanges.push(range);
+                continue;
+            }
+            for (const error of errors) {
+                log.error("invalid server config property `allowIPv4CidrRanges`: %s - %s", range, error);
+            }
+        }
+
+        config.allowIPv4CidrRanges = validRanges;
+    }
+
+    // validate allowIPv6CidrRanges
+    {
+        const validRanges: string[] = [];
+
+        for (const range of config.allowIPv6CidrRanges) {
+            const [valid, errors] = ipnum.Validator.isValidIPv6CidrRange(range);
+            if (valid) {
+                validRanges.push(range);
+                continue;
+            }
+            for (const error of errors) {
+                log.error("invalid server config property `allowIPv6CidrRanges`: %s - %s", range, error);
+            }
+        }
+
+        config.allowIPv6CidrRanges = validRanges;
     }
 
     return config as Readonly<Server>;

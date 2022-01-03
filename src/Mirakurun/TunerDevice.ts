@@ -13,10 +13,10 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-import * as events from "events";
 import * as child_process from "child_process";
 import * as stream from "stream";
 import * as util from "util";
+import EventEmitter = require("eventemitter3");
 import * as common from "./common";
 import * as log from "./log";
 import * as config from "./config";
@@ -28,7 +28,7 @@ import TSFilter from "./TSFilter";
 import Client, { ProgramsQuery } from "../client";
 
 interface User extends common.User {
-    _stream?: stream.Transform;
+    _stream?: TSFilter;
 }
 
 interface Status {
@@ -45,21 +45,21 @@ interface Status {
     readonly isFault: boolean;
 }
 
-export default class TunerDevice extends events.EventEmitter {
+export default class TunerDevice extends EventEmitter {
 
     private _channel: ChannelItem = null;
     private _command: string = null;
     private _process: child_process.ChildProcess = null;
     private _stream: stream.Readable = null;
 
-    private _users: Set<User> = new Set();
+    private _users = new Set<User>();
 
-    private _isAvailable: boolean = true;
-    private _isRemote: boolean = false;
-    private _isFault: boolean = false;
-    private _fatalCount: number = 0;
-    private _exited: boolean = false;
-    private _closing: boolean = false;
+    private _isAvailable = true;
+    private _isRemote = false;
+    private _isFault = false;
+    private _fatalCount = 0;
+    private _exited = false;
+    private _closing = false;
 
     constructor(private _index: number, private _config: config.Tuner) {
         super();
@@ -183,10 +183,10 @@ export default class TunerDevice extends events.EventEmitter {
                     }
 
                     await this._kill(true);
-                    await this._spawn(channel);
+                    this._spawn(channel);
                 }
             } else {
-                await this._spawn(channel);
+                this._spawn(channel);
             }
         }
 
@@ -194,7 +194,11 @@ export default class TunerDevice extends events.EventEmitter {
 
         user._stream = stream;
         this._users.add(user);
-        stream.once("close", () => this.endStream(user));
+        if (stream.closed === true) {
+            this.endStream(user);
+        } else {
+            stream.once("close", () => this.endStream(user));
+        }
 
         this._updated();
     }
@@ -239,7 +243,7 @@ export default class TunerDevice extends events.EventEmitter {
         return programs;
     }
 
-    private async _spawn(ch: ChannelItem): Promise<void> {
+    private _spawn(ch: ChannelItem): void {
 
         log.debug("TunerDevice#%d spawn...", this._index);
 
@@ -433,10 +437,17 @@ export default class TunerDevice extends events.EventEmitter {
         this._process = null;
         this._stream = null;
 
-        if (this._closing === true) {
-            this._channel = null;
-            this._users.clear();
+        if (this._closing === false && this._users.size !== 0) {
+            log.warn("TunerDevice#%d respawning because request has not closed", this._index);
+            ++status.errorCount.tunerDeviceRespawn;
+
+            this._spawn(this._channel);
+            return;
         }
+
+        this._fatalCount = 0;
+        this._channel = null;
+        this._users.clear();
 
         if (this._isFault === false) {
             this._isAvailable = true;
@@ -450,15 +461,6 @@ export default class TunerDevice extends events.EventEmitter {
         log.info("TunerDevice#%d released", this._index);
 
         this._updated();
-
-        if (this._closing === false && this._users.size !== 0) {
-            log.warn("TunerDevice#%d respawning because request has not closed", this._index);
-            ++status.errorCount.tunerDeviceRespawn;
-
-            this._spawn(this._channel);
-        } else {
-            this._fatalCount = 0;
-        }
     }
 
     private _updated(): void {

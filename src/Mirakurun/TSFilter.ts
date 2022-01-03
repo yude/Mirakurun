@@ -13,23 +13,24 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-import * as stream from "stream";
-import { StreamInfo } from "./common";
+import { Writable } from "stream";
+import EventEmitter = require("eventemitter3");
+import { TsStreamLite, TsCrc32, TsChar, TsLogo, tsDataModule } from "@chinachu/aribts";
+import { StreamInfo, getTimeFromMJD } from "./common";
 import * as log from "./log";
 import EPG from "./EPG";
 import status from "./status";
 import _ from "./_";
 import { getProgramItemId } from "./Program";
-import aribts = require("aribts");
 import Service from "./Service";
 import ServiceItem from "./ServiceItem";
-const calcCRC32: (buf: Buffer) => number = aribts.TsCrc32.calc;
 
-interface StreamOptions extends stream.TransformOptions {
+interface TSFilterOptions {
+    readonly output?: Writable;
+
     readonly networkId?: number;
     readonly serviceId?: number;
     readonly eventId?: number;
-    readonly noProvide?: boolean;
     readonly parseNIT?: boolean;
     readonly parseSDT?: boolean;
     readonly parseEIT?: boolean;
@@ -84,79 +85,72 @@ interface DownloadData {
     data?: Buffer;
 }
 
-export default class TSFilter extends stream.Transform {
+export default class TSFilter extends EventEmitter {
 
     streamInfo: StreamInfo = {};
+
+    // output
+    private _output: Writable;
 
     // options
     private _provideServiceId: number;
     private _provideEventId: number;
-    private _parseNIT: boolean = false;
-    private _parseSDT: boolean = false;
-    private _parseEIT: boolean = false;
+    private _parseNIT = false;
+    private _parseSDT = false;
+    private _parseEIT = false;
     private _targetNetworkId: number;
-    private _enableParseCDT: boolean = false;
-    private _enableParseDSMCC: boolean = false;
+    private _enableParseCDT = false;
+    private _enableParseDSMCC = false;
 
     // tsmf
-    private _tsmfEnableTsmfSplit: boolean = false;
-    private _tsmfSlotCounter: number = -1;
+    private _tsmfEnableTsmfSplit = false;
+    private _tsmfSlotCounter = -1;
     private _tsmfRelativeStreamNumber: number[] = [];
-    private _tsmfTsNumber: number = 0;
+    private _tsmfTsNumber = 0;
 
     // aribts
-    private _parser: stream.Transform = new aribts.TsStream();
+    private _parser = new TsStreamLite();
 
     // epg
     private _epg: EPG;
+    private _epgReady = false;
+    private _epgState: { [networkId: number]: { [serviceId: number]: BasicExtState } } = {};
 
     // buffer
-    private _packet: Buffer = Buffer.alloc(PACKET_SIZE);
-    private _offset: number = -1;
+    private _packet = Buffer.allocUnsafeSlow(PACKET_SIZE).fill(0);
+    private _offset = -1;
     private _buffer: Buffer[] = [];
-    private _parses: Buffer[] = [];
-    private _patsec: Buffer = Buffer.alloc(PACKET_SIZE - 4 - 1); // TS header, pointer_field
+    private _patsec = Buffer.allocUnsafeSlow(PACKET_SIZE - 4 - 1).fill(0); // TS header, pointer_field
+    private _patCRC = Buffer.allocUnsafeSlow(4).fill(0);
 
     // state
-    private _closed: boolean = false;
-    private _ready: boolean = true;
+    private _closed = false;
+    private _ready = true;
     private _providePids: Set<number> = null; // `null` to provides all
-    private _parsePids: Set<number> = new Set();
-    private _tsid: number = -1;
-    private _patCRC: Buffer = Buffer.alloc(4);
-    private _serviceIds: Set<number> = new Set();
-    private _parseServiceIds: Set<number> = new Set();
-    private _pmtPid: number = -1;
+    private _parsePids = new Set<number>();
+    private _tsid = -1;
+    private _serviceIds = new Set<number>();
+    private _parseServiceIds = new Set<number>();
+    private _pmtPid = -1;
     private _pmtTimer: NodeJS.Timer;
     private _streamTime: number = null;
-    private _essMap: Map<number, number> = new Map(); // <serviceId, pid>
-    private _essEsPids: Set<number> = new Set();
-    private _dlDataMap: Map<number, DownloadData> = new Map();
+    private _essMap = new Map<number, number>(); // <serviceId, pid>
+    private _essEsPids = new Set<number>();
+    private _dlDataMap = new Map<number, DownloadData>();
     private _logoDataTimer: NodeJS.Timer;
-    private _epgReady: boolean = false;
-    private _epgState: { [networkId: number]: { [serviceId: number]: BasicExtState } } = {};
-    private _overflowTimer: NodeJS.Timer = null;
-    private _provideEventLastDetectedAt: number = -1;
+    private _provideEventLastDetectedAt = -1;
     private _provideEventTimeout: NodeJS.Timer = null;
 
-    // stream options
-    private highWaterMark: number = _.config.server.highWaterMark || 1024 * 1024 * 24;
-    private _overflowTimeLimit: number = _.config.server.overflowTimeLimit || 1000 * 30;
     /** Number divisible by a multiple of 188 */
     private _maxBufferBytesBeforeReady: number = (() => {
         let bytes = _.config.server.maxBufferBytesBeforeReady || 1024 * 1024 * 8;
         bytes = bytes - bytes % PACKET_SIZE;
-        return bytes;
+        return Math.max(bytes, PACKET_SIZE);
     })();
-    private _eventEndTimeout: number = _.config.server.eventEndTimeout || 1000;
+    private _eventEndTimeout = _.config.server.eventEndTimeout || 1000;
 
-    // ReadableState in node/lib/_stream_readable.js
-    private _readableState: any;
-
-    constructor(options: StreamOptions) {
-        super({
-            allowHalfOpen: false
-        });
+    constructor(options: TSFilterOptions) {
+        super();
 
         const enabletsmf = options.tsmfRelTs || 0;
         if (enabletsmf !== 0) {
@@ -183,13 +177,21 @@ export default class TSFilter extends stream.Transform {
                 )
             );
             if (program) {
-                this._provideEventTimeout = setTimeout(
-                    () => this._observeProvideEvent(),
-                    program.startAt + program.duration - Date.now()
-                );
+                let timeout = program.startAt + program.duration - Date.now();
+                if (program.duration === 1) {
+                    timeout += 1000 * 60 * 3;
+                }
+                if (timeout < 0) {
+                    timeout = 1000 * 60 * 3;
+                }
+                this._provideEventTimeout = setTimeout(() => this._observeProvideEvent(), timeout);
             }
         }
-        if (options.noProvide === true) {
+        if (options.output) {
+            this._output = options.output;
+            this._output.once("finish", this._close.bind(this));
+            this._output.once("close", this._close.bind(this));
+        } else {
             this._provideServiceId = null;
             this._provideEventId = null;
             this._providePids = new Set();
@@ -213,7 +215,6 @@ export default class TSFilter extends stream.Transform {
             }
         }
 
-        this._parser.resume();
         this._parser.on("pat", this._onPAT.bind(this));
         this._parser.on("pmt", this._onPMT.bind(this));
         this._parser.on("nit", this._onNIT.bind(this));
@@ -221,6 +222,7 @@ export default class TSFilter extends stream.Transform {
         this._parser.on("eit", this._onEIT.bind(this));
         this._parser.on("tot", this._onTOT.bind(this));
 
+        this.once("end", this._close.bind(this));
         this.once("close", this._close.bind(this));
 
         log.info("TSFilter: created (serviceId=%d, eventId=%d)", this._provideServiceId, this._provideEventId);
@@ -232,57 +234,34 @@ export default class TSFilter extends stream.Transform {
         ++status.streamCount.tsFilter;
     }
 
-    _transform(chunk: Buffer, encoding: string, callback: Function) {
+    get closed(): boolean {
+        return this._closed;
+    }
+
+    write(chunk: Buffer): void {
 
         if (this._closed) {
-            callback(new Error("TSFilter has closed already"));
-            return;
-        }
-
-        // stringent safety measure
-        if (this._readableState.length > this.highWaterMark) {
-            log.warn("TSFilter#_transform: overflowing the buffer...");
-
-            if (this._overflowTimer === null) {
-                this._overflowTimer = setTimeout(() => {
-                    log.error("TSFilter#_transform: will closing because reached time limit of overflowing the buffer...");
-                    this._close();
-                }, this._overflowTimeLimit);
-            }
-
-            callback();  // just drop the chunk
-            ++status.errorCount.bufferOverflow;
-            return;
-        }
-        if (this._overflowTimer !== null) {
-            clearTimeout(this._overflowTimer);
-            this._overflowTimer = null;
+            throw new Error("TSFilter has closed already");
         }
 
         let offset = 0;
         const length = chunk.length;
+        const packets: Buffer[] = [];
 
         if (this._offset > 0) {
             if (length >= PACKET_SIZE - this._offset) {
                 offset = PACKET_SIZE - this._offset;
-                chunk.copy(this._packet, this._offset, 0, offset);
-                this._processPacket(this._packet);
+                packets.push(Buffer.concat([
+                    this._packet.slice(0, this._offset),
+                    chunk.slice(0, offset)
+                ]));
                 this._offset = 0;
             } else {
                 chunk.copy(this._packet, this._offset);
                 this._offset += length;
 
                 // chunk drained
-                callback();
                 return;
-            }
-        } else {
-            for (; offset < length; offset++) {
-                // sync byte (0x47) searching
-                if (chunk[offset] === 71) {
-                    this._offset = 0;
-                    break;
-                }
             }
         }
 
@@ -294,17 +273,19 @@ export default class TSFilter extends stream.Transform {
             }
 
             if (length - offset >= PACKET_SIZE) {
-                this._processPacket(chunk.slice(offset, offset + PACKET_SIZE));
-                this._offset = 0;
+                packets.push(chunk.slice(offset, offset + PACKET_SIZE));
             } else {
                 chunk.copy(this._packet, 0, offset);
                 this._offset = length - offset;
             }
         }
 
+        this._processPackets(packets);
+
         if (this._buffer.length !== 0) {
-            if (this._ready) {
-                this.push(Buffer.concat(this._buffer.splice(0, 16732))); // { let bytes = 1024 * 1024 * 3; (bytes - bytes % 188) / 188; }
+            if (this._ready && this._output.writableLength < this._output.writableHighWaterMark) {
+                this._output.write(Buffer.concat(this._buffer));
+                this._buffer.length = 0;
             } else {
                 const head = this._buffer.length - (this._maxBufferBytesBeforeReady / PACKET_SIZE);
                 if (head > 0) {
@@ -312,99 +293,119 @@ export default class TSFilter extends stream.Transform {
                 }
             }
         }
-
-        if (this._parses.length !== 0) {
-            this._parser.write(Buffer.concat(this._parses));
-            this._parses = [];
-        }
-
-        callback();
     }
 
-    private _processPacket(packet: Buffer): void {
+    end(): void {
+        this._close();
+    }
 
-        const pid = packet.readUInt16BE(1) & 0x1FFF;
+    close(): void {
+        this._close();
+    }
 
-        // tsmf
-        if (this._tsmfEnableTsmfSplit) {
-            if (pid === 0x002F) {
-                const tsmfFlameSync = packet.readUInt16BE(4) & 0x1FFF;
-                if (tsmfFlameSync !== 0x1A86 && tsmfFlameSync !== 0x0579) {
-                    return;
+    private _processPackets(packets: Buffer[]): void {
+
+        const parsingBuffers: Buffer[] = [];
+
+        for (let packet of packets) {
+            const pid = packet.readUInt16BE(1) & 0x1FFF;
+
+            // tsmf
+            if (this._tsmfEnableTsmfSplit) {
+                if (pid === 0x002F) {
+                    const tsmfFlameSync = packet.readUInt16BE(4) & 0x1FFF;
+                    if (tsmfFlameSync !== 0x1A86 && tsmfFlameSync !== 0x0579) {
+                        continue;
+                    }
+
+                    this._tsmfRelativeStreamNumber = [];
+                    for (let i = 0; i < 26; i++) {
+                        this._tsmfRelativeStreamNumber.push((packet[73 + i] & 0xf0) >> 4);
+                        this._tsmfRelativeStreamNumber.push(packet[73 + i] & 0x0f);
+                    }
+
+                    this._tsmfSlotCounter = 0;
+                    continue;
                 }
 
-                this._tsmfRelativeStreamNumber = [];
-                for (let i = 0; i < 26; i++) {
-                    this._tsmfRelativeStreamNumber.push((packet[73 + i] & 0xf0) >> 4);
-                    this._tsmfRelativeStreamNumber.push(packet[73 + i] & 0x0f);
+                if (this._tsmfSlotCounter < 0 || this._tsmfSlotCounter > 51) {
+                    continue;
                 }
 
-                this._tsmfSlotCounter = 0;
-                return;
+                this._tsmfSlotCounter++;
+
+                if (this._tsmfRelativeStreamNumber[this._tsmfSlotCounter - 1] !== this._tsmfTsNumber) {
+                    continue;
+                }
             }
 
-            if (this._tsmfSlotCounter < 0 || this._tsmfSlotCounter > 51) {
-                return;
+            // NULL
+            if (pid === 0x1FFF) {
+                continue;
             }
 
-            this._tsmfSlotCounter++;
-
-            if (this._tsmfRelativeStreamNumber[this._tsmfSlotCounter - 1] !== this._tsmfTsNumber) {
-                return;
+            // transport_error_indicator
+            if ((packet[1] & 0x80) >> 7 === 1) {
+                if (this.streamInfo[pid]) {
+                    ++this.streamInfo[pid].drop;
+                }
+                continue;
             }
-        }
 
-        // NULL
-        if (pid === 0x1FFF) {
-            return;
-        }
-
-        // transport_error_indicator
-        if ((packet[1] & 0x80) >> 7 === 1) {
-            if (this.streamInfo[pid]) {
-                ++this.streamInfo[pid].drop;
+            // parse
+            if (pid === 0) {
+                const targetStart = packet[7] + 4;
+                if (targetStart + 4 > 188) {
+                    // out of range. this packet is broken.
+                    if (this.streamInfo[pid]) {
+                        ++this.streamInfo[pid].drop;
+                    }
+                    continue; // drop
+                }
+                if (this._patCRC.compare(packet, targetStart, targetStart + 4) !== 0) {
+                    packet.copy(this._patCRC, 0, targetStart, targetStart + 4);
+                    parsingBuffers.push(packet);
+                }
+            } else if (
+                (pid === 0x12 && (this._parseEIT || this._provideEventId !== null)) ||
+                pid === 0x14 ||
+                this._parsePids.has(pid)
+            ) {
+                parsingBuffers.push(packet);
             }
-            return;
-        }
 
-        packet = Buffer.from(packet);
-
-        // parse
-        if (pid === 0) {
-            if (this._patCRC.compare(packet, packet[7] + 4, packet[7] + 8) !== 0) {
-                packet.copy(this._patCRC, 0, packet[7] + 4, packet[7] + 8);
-                this._parses.push(packet);
+            if (this._ready === false && (pid === 0x12 || this._provideEventId === null)) {
+                continue;
             }
-        } else if (
-            (pid === 0x12 && (this._parseEIT || this._provideEventId !== null)) ||
-            pid === 0x14 ||
-            this._parsePids.has(pid)
-        ) {
-            this._parses.push(packet);
+            if (this._providePids !== null && this._providePids.has(pid) === false) {
+                continue;
+            }
+
+            // PAT (0) rewriting
+            if (pid === 0 && this._pmtPid !== -1) {
+                packet = Buffer.from(packet);
+                this._patsec.copy(packet, 5, 0);
+            }
+
+            // packet counter
+            if (this.streamInfo[pid] === undefined) {
+                this.streamInfo[pid] = {
+                    packet: 0,
+                    drop: 0
+                };
+            }
+            ++this.streamInfo[pid].packet;
+
+            this._buffer.push(packet);
         }
 
-        if (this._ready === false && (pid === 0x12 || this._provideEventId === null)) {
-            return;
+        if (parsingBuffers.length !== 0) {
+            setImmediate(() => {
+                if (this._closed) { return; }
+                this._parser.write(parsingBuffers);
+                parsingBuffers.length = 0;
+            });
         }
-        if (this._providePids !== null && this._providePids.has(pid) === false) {
-            return;
-        }
-
-        // PAT (0) rewriting
-        if (pid === 0 && this._pmtPid !== -1) {
-            this._patsec.copy(packet, 5, 0);
-        }
-
-        // packet counter
-        if (!this.streamInfo[pid]) {
-            this.streamInfo[pid] = {
-                packet: 0,
-                drop: 0
-            };
-        }
-        ++this.streamInfo[pid].packet;
-
-        this._buffer.push(packet);
     }
 
     private _onPAT(pid: number, data: any): void {
@@ -482,7 +483,7 @@ export default class TSFilter extends stream.Transform {
                     this._patsec[15] = this._pmtPid & 255;
 
                     // calculate CRC32
-                    this._patsec.writeInt32BE(calcCRC32(this._patsec.slice(0, 16)), 16);
+                    this._patsec.writeInt32BE(TsCrc32.calc(this._patsec.slice(0, 16)), 16);
 
                     // padding
                     this._patsec.fill(0xff, 20);
@@ -603,7 +604,7 @@ export default class TSFilter extends stream.Transform {
             const m = service.descriptors.length;
             for (let j = 0; j < m; j++) {
                 if (service.descriptors[j].descriptor_tag === 0x48) {
-                    name = new aribts.TsChar(service.descriptors[j].service_name_char).decode();
+                    name = new TsChar(service.descriptors[j].service_name_char).decode();
                     type = service.descriptors[j].service_type;
                 }
 
@@ -669,8 +670,7 @@ export default class TSFilter extends stream.Transform {
         // write EPG stream and store result
         if (
             this._parseEIT &&
-            this._parseServiceIds.has(data.service_id) &&
-            data.table_id !== 0x4E && data.table_id !== 0x4F
+            this._parseServiceIds.has(data.service_id)
         ) {
             if (!this._epg && status.epg[this._targetNetworkId] !== true) {
                 status.epg[this._targetNetworkId] = true;
@@ -683,7 +683,7 @@ export default class TSFilter extends stream.Transform {
             if (this._epg) {
                 this._epg.write(data);
 
-                if (!this._epgReady) {
+                if (!this._epgReady && data.table_id !== 0x4E && data.table_id !== 0x4F) {
                     this._updateEpgState(data);
                 }
             }
@@ -692,21 +692,21 @@ export default class TSFilter extends stream.Transform {
 
     private _onTOT(pid: number, data: any): void {
 
-        this._streamTime = getTime(data.JST_time);
+        this._streamTime = getTimeFromMJD(data.JST_time);
     }
 
     private _onCDT(pid: number, data: any): void {
 
         if (data.data_type === 0x01) {
             // Logo
-            const dataModule = new aribts.tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
+            const dataModule = new tsDataModule.TsDataModuleCdtLogo(data.data_module_byte).decode();
             if (dataModule.logo_type !== 0x05) {
                 return;
             }
 
             log.debug("TSFilter#_onCDT: received logo data (networkId=%d, logoId=%d)", data.original_network_id, dataModule.logo_id);
 
-            const logoData = new aribts.TsLogo(dataModule.data_byte).decode();
+            const logoData = TsLogo.decode(dataModule.data_byte);
             Service.saveLogoData(data.original_network_id, dataModule.logo_id, logoData);
         }
     }
@@ -746,7 +746,7 @@ export default class TSFilter extends stream.Transform {
             const dlData = dl.data;
             delete dl.data;
 
-            const dataModule = new aribts.tsDataModule.TsDataModuleLogo(dlData).decode();
+            const dataModule = new tsDataModule.TsDataModuleLogo(dlData).decode();
             for (const logo of dataModule.logos) {
                 for (const logoService of logo.services) {
                     const service = _.service.get(logoService.original_network_id, logoService.service_id);
@@ -758,7 +758,7 @@ export default class TSFilter extends stream.Transform {
 
                     log.debug("TSFilter#_onDSMCC: received logo data (networkId=%d, logoId=%d)", service.networkId, service.logoId);
 
-                    const logoData = new aribts.TsLogo(logo.data_byte).decode(); // png
+                    const logoData = new TsLogo(logo.data_byte).decode(); // png
                     Service.saveLogoData(service.networkId, service.logoId, logoData);
                     break;
                 }
@@ -791,7 +791,7 @@ export default class TSFilter extends stream.Transform {
                         moduleVersion: module.moduleVersion,
                         moduleSize: module.moduleSize,
                         loadedBytes: 0,
-                        data: Buffer.alloc(module.moduleSize)
+                        data: Buffer.allocUnsafeSlow(module.moduleSize).fill(0)
                     });
 
                     log.debug("TSFilter#_onDSMCC: detected DII and buffer allocated for logo data (downloadId=%d, %d bytes)", dii.downloadId, module.moduleSize);
@@ -854,7 +854,7 @@ export default class TSFilter extends stream.Transform {
         }
 
         const now = Date.now();
-        const logoDataInterval = _.config.server.logoDataInterval || 1000 * 60 * 60 * 24; // 1 day
+        const logoDataInterval = _.config.server.logoDataInterval || 1000 * 60 * 60 * 24 * 7; // 7 days
 
         for (const networkId in logoIdNetworkMap) {
             for (const logoId of logoIdNetworkMap[networkId]) {
@@ -940,8 +940,8 @@ export default class TSFilter extends stream.Transform {
             for (let i = 0; i < 0x08; i++) {
                 for (const target of [stateBySrv.basic, stateBySrv.extended]) {
                     target.flags.push({
-                        flag: Buffer.alloc(32, 0x00),
-                        ignore: Buffer.alloc(32, 0xFF),
+                        flag: Buffer.allocUnsafeSlow(32).fill(0x00),
+                        ignore: Buffer.allocUnsafeSlow(32).fill(0xFF),
                         version_number: -1
                     });
                 }
@@ -999,24 +999,40 @@ export default class TSFilter extends stream.Transform {
         targetFlags.lastFlagsId = lastFlagsId;
         targetFlag.version_number = versionNumber;
 
-        this._epgReady = Object.keys(this._epgState).every(nid => {
-            return Object.keys(this._epgState[nid]).every(sid => {
-                return [this._epgState[nid][sid].basic, this._epgState[nid][sid].extended].every(target => {
-                    return target.flags.every(table => {
-                        return table.flag.every((segment, i) => {
-                            return (segment | table.ignore[i]) === 0xFF;
-                        });
-                    });
-                });
-            });
-        });
+        let ready = true;
+        isReady: for (const nid in this._epgState) {
+            for (const sid in this._epgState[nid]) {
+                for (const table of this._epgState[nid][sid].basic.flags.concat(this._epgState[nid][sid].extended.flags)) {
+                    for (let i = 0; i < table.flag.length; i++) {
+                        if ((table.flag[i] | table.ignore[i]) !== 0xFF) {
+                            ready = false;
+                            break isReady;
+                        }
+                    }
+                }
+            }
+        }
 
-        if (this._epgReady) {
+        if (ready === true) {
+            this._epgReady = true;
+            this._clearEpgState();
+
             for (const service of _.service.findByNetworkId(this._targetNetworkId)) {
                 service.epgReady = true;
             }
 
             process.nextTick(() => this.emit("epgReady"));
+        }
+    }
+
+    private _clearEpgState() {
+
+        if (!this._epgState) {
+            return;
+        }
+
+        for (const nid in this._epgState) {
+            delete this._epgState[nid];
         }
     }
 
@@ -1034,14 +1050,10 @@ export default class TSFilter extends stream.Transform {
 
         // clear buffer
         setImmediate(() => {
-            this._readableState.buffer = [];
-            this._readableState.length = 0;
-            this._patsec.fill(0);
-            delete this._patsec;
-            this._packet.fill(0);
             delete this._packet;
             delete this._buffer;
-            delete this._parses;
+            delete this._patsec;
+            delete this._patCRC;
         });
 
         // clear parser instance
@@ -1061,6 +1073,18 @@ export default class TSFilter extends stream.Transform {
                     service.epgUpdatedAt = now;
                 }
             }
+
+            this._clearEpgState();
+            delete this._epgState;
+        }
+
+        // clear output stream
+        if (this._output) {
+            if (this._output.writableEnded === false) {
+                this._output.end();
+            }
+            this._output.removeAllListeners();
+            delete this._output;
         }
 
         // clear streamInfo
@@ -1074,24 +1098,4 @@ export default class TSFilter extends stream.Transform {
         this.emit("close");
         this.emit("end");
     }
-}
-
-function getTime(buffer: Buffer): number {
-
-    const mjd = (buffer[0] << 8) | buffer[1];
-
-    let y = (((mjd - 15078.2) / 365.25) | 0);
-    let m = (((mjd - 14956.1 - ((y * 365.25) | 0)) / 30.6001) | 0);
-    const d = mjd - 14956 - ((y * 365.25) | 0) - ((m * 30.6001) | 0);
-
-    const k = (m === 14 || m === 15) ? 1 : 0;
-
-    y = y + k + 1900;
-    m = m - 1 - k * 12;
-
-    const h = (buffer[2] >> 4) * 10 + (buffer[2] & 0x0F);
-    const i = (buffer[3] >> 4) * 10 + (buffer[3] & 0x0F);
-    const s = (buffer[4] >> 4) * 10 + (buffer[4] & 0x0F);
-
-    return new Date(y, m - 1, d, h, i, s).getTime();
 }
