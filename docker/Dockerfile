@@ -27,6 +27,7 @@ FROM ${ARCH}node:16.6.1-buster-slim
 
 WORKDIR /app
 RUN apt-get -y update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
+        ca-certificates \
         make \
         gcc \
         g++ \
